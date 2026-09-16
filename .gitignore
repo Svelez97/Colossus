@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# Datos de prueba / salidas (regenerar con generate_test_data.py)
+big_test.csv
+*_FILTER.csv
+
+# Sistema
+.DS_Store
+Thumbs.db
