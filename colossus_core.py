@@ -1,7 +1,7 @@
 """
-mff_core.py
------------
-Motor de filtrado de archivos masivos (Massive Files Filter).
+colossus_core.py
+----------------
+Motor de filtrado de archivos masivos (Colossus).
 
 Toda la logica es pura y testeable sin interfaz grafica. Usa Polars en modo
 LAZY (pl.scan_csv / pl.scan_parquet) para poder trabajar con archivos que no

@@ -1,6 +1,6 @@
 """
-mff_icons.py
-------------
+colossus_icons.py
+-----------------
 Iconos dibujados por codigo con QPainter (vectoriales), para no depender de
 archivos de imagen (los .png/.ico originales se perdieron).
 
@@ -14,7 +14,7 @@ from PySide6.QtGui import (
 )
 
 # Paleta base de la app
-ACCENT = "#E4572E"      # naranja C.O.R.E
+ACCENT = "#E4572E"      # naranja de marca
 ACCENT_DK = "#B23A17"
 INK = "#2B2B33"         # gris tinta para iconos neutros
 MUTED = "#6B7280"
@@ -154,7 +154,7 @@ def _draw(kind: str, p: QPainter, s: float, color: str, accent: str) -> None:
         p.drawLine(QPointF(c.x() - d, c.y() + d), QPointF(c.x() + d, c.y() - d))
 
     elif kind == "logo":
-        # Logo: embudo dentro de circulo -> Massive Files Filter
+        # Logo: embudo dentro de circulo -> Colossus
         p.setBrush(QBrush(QColor(accent)))
         p.setPen(_pen(ACCENT_DK, lw))
         c = QPointF(s * 0.5, s * 0.5)

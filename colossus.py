@@ -1,6 +1,6 @@
 """
-mff_app.py  -  Massive Files Filter (C.O.R.E)
-=============================================
+colossus.py  -  Colossus
+========================
 Interfaz grafica en PySide6 para filtrar archivos CSV/TXT/Parquet demasiado
 grandes para abrir en Excel. Reescritura del notebook MFF original con:
 
@@ -13,7 +13,7 @@ grandes para abrir en Excel. Reescritura del notebook MFF original con:
   * Sistema de diseno propio con tema CLARO / OSCURO (boton en la barra).
 
 Requisitos:  pip install polars pyarrow PySide6
-Ejecutar:    python mff_app.py
+Ejecutar:    python colossus.py
 """
 from __future__ import annotations
 
@@ -34,8 +34,8 @@ from PySide6.QtWidgets import (
     QMessageBox, QHeaderView, QMenu, QGraphicsDropShadowEffect, QSizePolicy,
 )
 
-import mff_core as core
-from mff_icons import make_icon, make_pixmap
+import colossus_core as core
+from colossus_icons import make_icon, make_pixmap
 
 
 # --------------------------------------------------------------------------- #
@@ -101,8 +101,8 @@ QMainWindow {{ background: {p['bg']}; }}
 
 /* ---------- Barra de aplicacion ---------- */
 #AppBar {{ background: {p['appbar']}; border: none; }}
-#AppTitle {{ color: {p['appbar_text']}; font-size: 16px; font-weight: 800;
-             letter-spacing: 0.3px; }}
+#AppTitle {{ color: {p['appbar_text']}; font-size: 19px; font-weight: 800;
+             letter-spacing: 0.5px; }}
 #AppSub {{ color: {p['appbar_sub']}; font-size: 10px; font-weight: 700;
            letter-spacing: 2px; }}
 #FileChip {{ color: {p['appbar_text']}; background: rgba(255,255,255,0.08);
@@ -510,7 +510,7 @@ def section_title(text: str) -> QLabel:
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Massive Files Filter  ·  C.O.R.E")
+        self.setWindowTitle("Colossus")
         self.setWindowIcon(make_icon("logo", 64))
         self.resize(1380, 840)
         self.setMinimumSize(1060, 620)
@@ -587,15 +587,9 @@ class MainWindow(QMainWindow):
         logo.setPixmap(make_pixmap("logo", 38))
         lay.addWidget(logo)
 
-        brand = QVBoxLayout()
-        brand.setSpacing(0)
-        t = QLabel("Massive Files Filter")
+        t = QLabel("Colossus")
         t.setObjectName("AppTitle")
-        s = QLabel("C . O . R . E")
-        s.setObjectName("AppSub")
-        brand.addWidget(t)
-        brand.addWidget(s)
-        lay.addLayout(brand)
+        lay.addWidget(t)
 
         lay.addSpacing(18)
         self.open_btn = primary(QPushButton("  Abrir archivo"))

@@ -1,8 +1,8 @@
 """
 generate_test_data.py
 ----------------------
-Genera un CSV de prueba grande para probar Massive Files Filter, con tipos de
-dato mixtos (entero, texto, flotante, booleano y fecha) y separador '|'.
+Genera un CSV de prueba grande para probar Colossus, con tipos de dato mixtos
+(entero, texto, flotante, booleano y fecha) y separador '|'.
 
 Uso:
     python generate_test_data.py            # 5.000.000 de filas (~272 MB)
