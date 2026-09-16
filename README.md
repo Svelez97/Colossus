@@ -23,7 +23,6 @@ python colossus.py
 | `colossus_core.py`     | El motor de filtrado con Polars (lógica pura, sin GUI). |
 | `colossus_icons.py`    | Iconos dibujados por código con QPainter. |
 | `generate_test_data.py`| Genera un CSV de prueba grande (5M filas ≈ 272 MB). |
-| `MFF_UI.ipynb`         | El notebook original (referencia histórica). |
 
 Genera datos de prueba con:
 
