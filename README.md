@@ -5,8 +5,9 @@ Construida con **PySide6 (Qt)** + **Polars** en modo *lazy*, así que puede leer
 exportar archivos que no caben en memoria.
 
 Interfaz con **tema claro / oscuro** (botón 🌙/☀️ en la barra superior),
-barra de aplicación, tarjetas y botones primarios. Los iconos se dibujan por
-código, sin archivos de imagen.
+barra de aplicación, tarjetas y botones primarios. La paleta sigue el
+**degradado del logo** (esmeralda → azul → violeta → fucsia sobre azul marino).
+Los iconos se dibujan por código, sin archivos de imagen.
 
 ## Formatos soportados
 
@@ -39,6 +40,7 @@ python colossus.py
 | `colossus.py`          | La interfaz gráfica (ventana, filtros, tabla, export). |
 | `colossus_core.py`     | El motor de filtrado con Polars (lógica pura, sin GUI). |
 | `colossus_icons.py`    | Iconos dibujados por código con QPainter. |
+| `logo.jpg`             | Logo de la marca; de él sale la paleta de colores. |
 | `generate_test_data.py`| Genera un CSV de prueba grande (5M filas ≈ 272 MB). |
 
 Genera datos de prueba con:
@@ -64,11 +66,16 @@ python generate_test_data.py 20000000   # 20 millones de filas (~1 GB)
    superan, escribe un valor y pulsa **Enter** para verificar que existe (sin
    distinguir mayúsculas). Doble clic inserta el valor en el filtro activo.
 5. **Vista previa** / **Contar filas** / **Min / Max** sin exportar.
-6. **Resumen** (botón): abre el **resumen estadístico** del resultado filtrado
-   —count, media, desviación estándar, mínimo, cuartiles (25/50/75 %) y máximo,
-   como el `describe()` de pandas/polars—. Dentro, el botón **Ver distribución**
-   muestra la distribución de la columna que elijas: histograma por rangos (para
-   números) o conteo por valor (texto/booleanas), con una **barra visual**.
+6. **Resumen** (botón): abre el **resumen estadístico** del resultado filtrado.
+   Se calcula de forma *lazy* sobre **todo el dataset filtrado** (no una muestra)
+   y muestra —solo para las **columnas numéricas**— count, media, desviación
+   estándar, mínimo, cuartiles (25/50/75 %) y máximo, como el `describe()` de
+   pandas/polars (las columnas de texto, booleanas o de fecha se omiten del
+   resumen numérico). Dentro, el botón **Ver distribución** dibuja un **gráfico**
+   de la columna que elijas —incluidas las de **texto**—: barras con una **curva
+   suave tipo campana** para columnas numéricas (histograma por rangos) o conteo
+   por valor para texto/booleanas/fecha. Los colores del gráfico siguen el
+   degradado del logo.
 7. **Exportar CSV**: escribe el resultado en streaming (no carga todo en RAM).
 
 ## Tabla de resultados (tipo Excel)

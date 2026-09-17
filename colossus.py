@@ -26,7 +26,11 @@ from PySide6.QtCore import (
     Qt, QAbstractTableModel, QModelIndex, QObject, QRunnable, QThreadPool,
     Signal, Slot, QTimer, QSize, QRectF,
 )
-from PySide6.QtGui import QColor, QPalette, QPainter, QPen, QFont
+from PySide6.QtGui import (
+    QColor, QPalette, QPainter, QPen, QFont, QBrush, QLinearGradient,
+    QPainterPath, QFontMetrics, QPolygonF,
+)
+from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QComboBox, QCheckBox,
     QPushButton, QToolButton, QHBoxLayout, QVBoxLayout, QSplitter, QScrollArea,
@@ -42,25 +46,44 @@ from colossus_icons import make_icon, make_pixmap
 # --------------------------------------------------------------------------- #
 # Paletas de color (sistema de diseno)
 # --------------------------------------------------------------------------- #
+# Degradado de marca del logo: esmeralda -> azul -> violeta -> fucsia.
+# Se usa para botones primarios, la barra superior y los graficos.
+_GRAD = ("qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+         "stop:0 #15C9A6, stop:0.5 #3B7FDB, stop:1 #7A3CE0)")
+_GRAD_HOVER = ("qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+               "stop:0 #19D9B4, stop:0.5 #4B8FEB, stop:1 #8A4CF0)")
+_APPBAR_LIGHT = ("qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+                 "stop:0 #0E1030, stop:0.55 #241C5A, stop:1 #3A1C6E)")
+_APPBAR_DARK = ("qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+                "stop:0 #080A1C, stop:0.55 #17123A, stop:1 #241148)")
+
+# Paradas del degradado del logo como colores solidos, para pintar los graficos.
+BRAND_STOPS = ["#15C9A6", "#3B7FDB", "#7A3CE0", "#B02FD6"]
+
 PALETTES = {
     "light": {
-        "bg": "#EDEFF3", "appbar": "#1D2230", "appbar_text": "#F4F6FB",
-        "appbar_sub": "#9AA3B8", "surface": "#FFFFFF", "surface_alt": "#F6F7FA",
-        "border": "#E1E4EC", "text": "#232838", "subtext": "#6B7280",
-        "accent": "#E4572E", "accent_hover": "#C8461F", "accent_soft": "#FBE3D9",
-        "table_header": "#F1F3F8", "selection": "#FBE3D9", "grid": "#EDEFF3",
+        "bg": "#EEF0F7", "appbar": _APPBAR_LIGHT, "appbar_text": "#F4F6FB",
+        "appbar_sub": "#AEB2E0", "surface": "#FFFFFF", "surface_alt": "#F5F5FB",
+        "border": "#E4E2F0", "text": "#232838", "subtext": "#6B7280",
+        "accent": "#7A3CE0", "accent_hover": "#6A2FD0", "accent_soft": "#EBE3FB",
+        "accent_grad": _GRAD, "accent_grad_hover": _GRAD_HOVER,
+        "table_header": "#F3F1FB", "selection": "#EBE3FB", "grid": "#ECEAF6",
         "field": "#FFFFFF", "shadow": 45,
     },
     "dark": {
-        "bg": "#0F1218", "appbar": "#0A0C11", "appbar_text": "#EAECF3",
-        "appbar_sub": "#7C8397", "surface": "#191D27", "surface_alt": "#212632",
-        "border": "#2A3040", "text": "#E4E7F0", "subtext": "#98A0B2",
-        "accent": "#FF6B3D", "accent_hover": "#FF855F", "accent_soft": "#7A4126",
-        "table_header": "#212632", "selection": "#7A4126", "grid": "#242A38",
-        "field": "#141821", "shadow": 120,
+        "bg": "#0C0E24", "appbar": _APPBAR_DARK, "appbar_text": "#EAECF3",
+        "appbar_sub": "#9A9FD6", "surface": "#14163A", "surface_alt": "#1C1F48",
+        "border": "#2A2E5C", "text": "#E4E7F0", "subtext": "#9AA0B2",
+        "accent": "#8B5CF6", "accent_hover": "#9B6CFF", "accent_soft": "#2C2856",
+        "accent_grad": _GRAD, "accent_grad_hover": _GRAD_HOVER,
+        "table_header": "#1C1F48", "selection": "#2C2856", "grid": "#232752",
+        "field": "#0F1130", "shadow": 120,
     },
 }
 NEUTRAL_ICON = "#8A90A2"   # gris que se ve bien en claro y oscuro
+
+# Paleta activa (para que los graficos lean los colores del tema actual).
+ACTIVE_PALETTE = PALETTES["light"]
 
 # Check blanco (SVG embebido) para la casilla activada -> activacion inequivoca
 import urllib.parse as _up
@@ -133,9 +156,9 @@ QPushButton {{ background: {p['surface']}; color: {p['text']};
 QPushButton:hover {{ background: {p['surface_alt']}; border-color: {p['accent']}; }}
 QPushButton:disabled {{ color: {p['subtext']}; border-color: {p['border']};
     background: {p['surface']}; }}
-QPushButton[primary="true"] {{ background: {p['accent']}; color: #FFFFFF;
+QPushButton[primary="true"] {{ background: {p['accent_grad']}; color: #FFFFFF;
     border: 1px solid {p['accent']}; }}
-QPushButton[primary="true"]:hover {{ background: {p['accent_hover']};
+QPushButton[primary="true"]:hover {{ background: {p['accent_grad_hover']};
     border-color: {p['accent_hover']}; }}
 QPushButton[primary="true"]:disabled {{ background: {p['accent_soft']};
     color: rgba(255,255,255,0.85); border-color: {p['accent_soft']}; }}
@@ -761,49 +784,198 @@ class SqliteTableDialog(QDialog):
 
 
 # --------------------------------------------------------------------------- #
-# Dialogo de resumen estadistico + distribucion
+# Grafico de distribucion (barras + curva tipo campana), dibujado a mano
+# --------------------------------------------------------------------------- #
+class DistChart(QWidget):
+    """Dibuja la distribucion de una columna como un grafico de barras. Para
+    columnas numericas superpone una curva suave (forma de campana de Gauss).
+    Los colores siguen el degradado del logo (esmeralda -> violeta -> fucsia)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._data: dict | None = None
+        self.setMinimumHeight(320)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def set_data(self, data: dict | None):
+        self._data = data
+        self.update()
+
+    @staticmethod
+    def _brand_color(t: float) -> QColor:
+        """Interpola un color a lo largo del degradado del logo (t en 0..1)."""
+        stops = [QColor(c) for c in BRAND_STOPS]
+        if t <= 0:
+            return stops[0]
+        if t >= 1:
+            return stops[-1]
+        seg = t * (len(stops) - 1)
+        i = int(seg)
+        f = seg - i
+        a, b = stops[i], stops[i + 1]
+        return QColor(int(a.red() + (b.red() - a.red()) * f),
+                      int(a.green() + (b.green() - a.green()) * f),
+                      int(a.blue() + (b.blue() - a.blue()) * f))
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        pal = ACTIVE_PALETTE
+        rect = self.rect()
+        p.fillRect(rect, QColor(pal["surface"]))
+
+        data = self._data
+        if not data or not data.get("counts"):
+            p.setPen(QColor(pal["subtext"]))
+            p.drawText(rect, Qt.AlignCenter, "Sin datos para graficar.")
+            p.end()
+            return
+
+        counts = data["counts"]
+        labels = data["labels"]
+        numeric = data["numeric"]
+        n = len(counts)
+        maxc = max(counts) or 1
+
+        ml, mr, mt, mb = 62, 18, 18, 70
+        W = rect.width() - ml - mr
+        H = rect.height() - mt - mb
+        if W <= 10 or H <= 10:
+            p.end()
+            return
+        x0, y0 = ml, mt + H
+
+        grid = QColor(pal["grid"])
+        axis = QColor(pal["subtext"])
+        sub = QColor(pal["subtext"])
+
+        # --- rejilla + eje Y ---
+        p.setFont(QFont("Segoe UI", 8))
+        steps = 4
+        for i in range(steps + 1):
+            frac = i / steps
+            y = y0 - H * frac
+            p.setPen(QPen(grid, 1))
+            p.drawLine(int(x0), int(y), int(x0 + W), int(y))
+            p.setPen(axis)
+            p.drawText(QRectF(0, y - 8, ml - 8, 16),
+                       Qt.AlignRight | Qt.AlignVCenter, f"{int(round(maxc * frac)):,}")
+
+        # --- barras ---
+        gap = 0.06 if numeric else 0.2
+        slot = W / n
+        bw = slot * (1 - gap)
+        centers = []
+        for i, c in enumerate(counts):
+            t = i / (n - 1) if n > 1 else 0.5
+            col = self._brand_color(t)
+            bx = x0 + slot * i + (slot - bw) / 2
+            bh = H * (c / maxc)
+            by = y0 - bh
+            centers.append((bx + bw / 2, by))
+            g = QLinearGradient(0, by, 0, y0)
+            c_top = QColor(col)
+            c_bot = QColor(col)
+            c_bot.setAlpha(150)
+            g.setColorAt(0, c_top)
+            g.setColorAt(1, c_bot)
+            p.fillRect(QRectF(bx, by, bw, max(1.0, bh)), QBrush(g))
+
+        # --- curva suave tipo campana (solo numerica) ---
+        if numeric and n > 2:
+            pts = [QPointF(cx, cy) for cx, cy in centers]
+            path = QPainterPath(pts[0])
+            for i in range(len(pts) - 1):
+                a, b = pts[i], pts[i + 1]
+                mx = (a.x() + b.x()) / 2
+                path.cubicTo(mx, a.y(), mx, b.y(), b.x(), b.y())
+            pen = QPen(QColor(pal["accent"]), 2.2)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawPath(path)
+            for pt in pts:
+                p.setBrush(QColor(pal["surface"]))
+                p.setPen(QPen(QColor(pal["accent"]), 1.6))
+                p.drawEllipse(pt, 2.4, 2.4)
+
+        # --- eje X + etiquetas ---
+        p.setPen(QPen(axis, 1.4))
+        p.drawLine(int(x0), int(y0), int(x0 + W), int(y0))
+        p.setFont(QFont("Segoe UI", 8))
+        if numeric and data.get("edges"):
+            edges = data["edges"]
+            ne = len(edges)
+            ticks = min(6, ne)
+            for k in range(ticks):
+                idx = round(k * (ne - 1) / (ticks - 1)) if ticks > 1 else 0
+                x = x0 + W * (idx / (ne - 1))
+                p.setPen(sub)
+                p.drawText(QRectF(x - 42, y0 + 6, 84, 14),
+                           Qt.AlignHCenter | Qt.AlignTop, f"{edges[idx]:.3g}")
+        else:
+            rotate = slot < 74
+            for i, lab in enumerate(labels):
+                cx = x0 + slot * i + slot / 2
+                short = lab if len(lab) <= 16 else lab[:14] + "…"
+                p.setPen(sub)
+                if rotate:
+                    p.save()
+                    p.translate(cx, y0 + 8)
+                    p.rotate(35)
+                    p.drawText(0, 0, short)
+                    p.restore()
+                else:
+                    p.drawText(QRectF(cx - slot / 2, y0 + 6, slot, 16),
+                               Qt.AlignHCenter | Qt.AlignTop, short)
+        p.end()
+
+
+# --------------------------------------------------------------------------- #
+# Dialogo de resumen estadistico + distribucion (todo sobre el dataset filtrado)
 # --------------------------------------------------------------------------- #
 class StatsDialog(QDialog):
-    """Muestra el resumen estadistico (describe) del resultado filtrado y, con un
-    boton, la distribucion de cualquier columna (histograma o conteo por valor)."""
+    """Resumen estadistico (solo columnas numericas) y distribucion de cualquier
+    columna, calculados de forma LAZY sobre TODO el resultado filtrado. La
+    distribucion se muestra como un grafico (barras + curva tipo campana)."""
 
-    def __init__(self, df: pl.DataFrame, parent=None):
-        super().__init__(parent)
-        self.df = df
+    def __init__(self, lf, schema: dict, window: "MainWindow"):
+        super().__init__(window)
+        self.lf = lf
+        self.schema = schema
+        self.window = window
         self.setWindowTitle("Resumen estadístico")
         self.setModal(True)
-        self.resize(920, 640)
+        self.resize(980, 740)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 12)
         root.setSpacing(10)
 
-        head = QLabel(f"Resumen de {df.height:,} filas · {df.width} columnas")
-        head.setObjectName("SectionTitle")
-        root.addWidget(head)
+        self.head = QLabel("Resumen del resultado filtrado (dataset completo)")
+        self.head.setObjectName("SectionTitle")
+        root.addWidget(self.head)
 
         split = QSplitter(Qt.Vertical)
         split.setHandleWidth(10)
         split.setChildrenCollapsible(False)
 
-        # --- Resumen (describe) ---
+        # --- Resumen (solo numericas) ---
         top = QWidget()
         tl = QVBoxLayout(top)
         tl.setContentsMargins(0, 0, 0, 0)
         tl.setSpacing(6)
-        tl.addWidget(QLabel("Estadísticas (count · media · std · min · cuartiles · max)"))
+        tl.addWidget(QLabel("Estadísticas de columnas numéricas "
+                            "(count · media · std · min · cuartiles · max)"))
         self.desc_table = QTableView()
         self.desc_table.setAlternatingRowColors(True)
-        try:
-            self.desc_table.setModel(PolarsTableModel(core.describe(df)))
-        except Exception as exc:
-            self.desc_table.setModel(PolarsTableModel(
-                pl.DataFrame({"error": [f"No se pudo calcular: {exc}"]})))
-        self.desc_table.resizeColumnsToContents()
+        self.desc_table.setModel(PolarsTableModel(
+            pl.DataFrame({"estadística": ["Calculando…"]})))
         tl.addWidget(self.desc_table, 1)
         split.addWidget(top)
 
-        # --- Distribucion ---
+        # --- Distribucion (grafico) ---
         bot = QWidget()
         bl = QVBoxLayout(bot)
         bl.setContentsMargins(0, 0, 0, 0)
@@ -811,7 +983,7 @@ class StatsDialog(QDialog):
         picker = QHBoxLayout()
         picker.addWidget(QLabel("Distribución de:"))
         self.dist_combo = QComboBox()
-        for cname, dtype in df.schema.items():
+        for cname, dtype in schema.items():
             self.dist_combo.addItem(f"{cname}   ·{core.dtype_label(dtype)}", cname)
         picker.addWidget(self.dist_combo, 1)
         self.dist_btn = primary(QPushButton("  Ver distribución"))
@@ -820,18 +992,15 @@ class StatsDialog(QDialog):
         picker.addWidget(self.dist_btn)
         bl.addLayout(picker)
 
-        self.dist_table = QTableView()
-        self.dist_table.setAlternatingRowColors(True)
-        # fuente monoespaciada para que las barras queden alineadas
-        self.dist_table.setFont(QFont("Consolas", 10))
-        self.dist_table.setModel(PolarsTableModel())
-        bl.addWidget(self.dist_table, 1)
+        self.chart = DistChart()
+        bl.addWidget(self.chart, 1)
         self.dist_hint = QLabel("")
         self.dist_hint.setObjectName("SectionHint")
+        self.dist_hint.setWordWrap(True)
         bl.addWidget(self.dist_hint)
         split.addWidget(bot)
 
-        split.setSizes([250, 340])
+        split.setSizes([230, 430])
         root.addWidget(split, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
@@ -840,22 +1009,52 @@ class StatsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         root.addWidget(buttons)
 
+        self._load_describe()
         if self.dist_combo.count():
-            self._show_distribution()      # muestra la primera por defecto
+            self._show_distribution()
+
+    def _load_describe(self):
+        def work():
+            return core.describe_numeric(self.lf)
+
+        def done(df):
+            self.desc_table.setModel(PolarsTableModel(df))
+            self.desc_table.resizeColumnsToContents()
+
+        def err(msg):
+            self.desc_table.setModel(PolarsTableModel(
+                pl.DataFrame({"error": [f"No se pudo calcular: {msg}"]})))
+
+        self.window.run_async(work, done, "Calculando resumen…", err)
 
     def _show_distribution(self):
         col = self.dist_combo.currentData()
         if not col:
             return
-        try:
-            dist = core.distribution(self.df, col)
-            self.dist_table.model().set_df(dist)
-            self.dist_table.resizeColumnsToContents()
+        self.dist_btn.setEnabled(False)
+        self.dist_hint.setText("Calculando distribución…")
+
+        def work():
+            return core.distribution_data(self.lf, col)
+
+        def done(data):
+            self.dist_btn.setEnabled(True)
+            self.chart.set_data(data)
+            kind = "histograma (rangos)" if data["numeric"] else "conteo por valor"
+            extra = "  ·  +categorías no mostradas" if data.get("truncated") else ""
+            nulls = data.get("nulls", 0)
+            nul = f"  ·  {nulls:,} nulos" if nulls else ""
+            self.head.setText(
+                f"Resultado filtrado · {data['total']:,} filas (dataset completo)")
             self.dist_hint.setText(
-                f"{dist.height} categorías · barras proporcionales al conteo.")
-        except Exception as exc:
-            self.dist_table.model().set_df(pl.DataFrame())
-            self.dist_hint.setText(f"⚠  No se pudo calcular la distribución: {exc}")
+                f"«{col}» · {kind} · {len(data['counts'])} barras{nul}{extra}")
+
+        def err(msg):
+            self.dist_btn.setEnabled(True)
+            self.chart.set_data(None)
+            self.dist_hint.setText(f"⚠  No se pudo calcular la distribución: {msg}")
+
+        self.window.run_async(work, done, "Calculando distribución…", err)
 
 
 # --------------------------------------------------------------------------- #
@@ -1252,8 +1451,10 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------------------- temas --
     def apply_theme(self, name: str):
+        global ACTIVE_PALETTE
         self._theme = name
         p = PALETTES[name]
+        ACTIVE_PALETTE = p
         app = QApplication.instance()
         if app:
             app.setPalette(build_palette(p))
@@ -1448,18 +1649,14 @@ class MainWindow(QMainWindow):
         self.run_async(work, done, "Calculando min/max...")
 
     def do_stats(self):
-        """Materializa el resultado filtrado y abre el resumen estadistico."""
-        def work():
+        """Abre el resumen estadistico. El calculo (describe + distribucion) se
+        hace de forma LAZY sobre TODO el resultado filtrado, dentro del dialogo."""
+        try:
             lf, _ = self._filtered_lf()
-            return lf.collect()
-
-        def done(df):
-            if df.height == 0:
-                self.preview_info.setText("No hay filas para resumir.")
-                return
-            StatsDialog(df, self).exec()
-
-        self.run_async(work, done, "Calculando resumen estadistico...")
+        except Exception as exc:  # noqa: BLE001
+            self.error(f"{type(exc).__name__}: {exc}")
+            return
+        StatsDialog(lf, dict(self.schema), self).exec()
 
     def do_export(self):
         if not self.path:

@@ -634,13 +634,116 @@ def describe(df: pl.DataFrame) -> pl.DataFrame:
     return df.describe()
 
 
+# Etiquetas de las estadisticas y como calcularlas (orden de fila).
+_STAT_ROWS = [
+    ("count", "count", lambda c: c.count()),
+    ("nulos", "nulls", lambda c: c.null_count()),
+    ("media", "mean",  lambda c: c.mean()),
+    ("std",   "std",   lambda c: c.std()),
+    ("min",   "min",   lambda c: c.min()),
+    ("25%",   "q25",   lambda c: c.quantile(0.25)),
+    ("50%",   "q50",   lambda c: c.median()),
+    ("75%",   "q75",   lambda c: c.quantile(0.75)),
+    ("max",   "max",   lambda c: c.max()),
+]
+
+
+def _fmt_stat(key: str, v) -> str:
+    """Formatea un valor estadistico para mostrarlo limpio en la tabla."""
+    if v is None:
+        return ""
+    if key in ("count", "nulls"):
+        try:
+            return f"{int(v):,}"
+        except (TypeError, ValueError):
+            return str(v)
+    try:
+        fv = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    av = abs(fv)
+    if fv == int(fv) and av < 1e15:
+        return f"{int(fv):,}"
+    if av != 0 and (av < 1e-3 or av >= 1e6):
+        return f"{fv:.3e}"
+    return f"{fv:,.3f}"
+
+
+def describe_numeric(lf: pl.LazyFrame) -> pl.DataFrame:
+    """Resumen estadistico (tipo .describe()) calculado de forma LAZY sobre TODO
+    el dataset filtrado, SOLO para columnas numericas (entero/flotante). Ignora
+    texto, booleano y fecha. Devuelve una tabla: filas = estadisticas, columnas =
+    columnas numericas. Si no hay columnas numericas, devuelve un aviso."""
+    schema = get_schema(lf)
+    num_cols = [c for c, t in schema.items() if dtype_kind(t) in ("int", "float")]
+    if not num_cols:
+        return pl.DataFrame({
+            "estadística": ["(sin columnas numéricas)"],
+        })
+
+    aggs = []
+    for c in num_cols:
+        for _label, key, fn in _STAT_ROWS:
+            aggs.append(fn(pl.col(c)).alias(f"{c}\x00{key}"))
+    row = lf.select(aggs).collect()
+
+    data: dict[str, list] = {"estadística": [lbl for lbl, _k, _f in _STAT_ROWS]}
+    for c in num_cols:
+        data[c] = [_fmt_stat(key, row.item(0, f"{c}\x00{key}"))
+                   for _lbl, key, _f in _STAT_ROWS]
+    return pl.DataFrame(data)
+
+
+def distribution_data(lf: pl.LazyFrame, column: str, bins: int = 24,
+                      top: int = 25) -> dict:
+    """Datos de distribucion de UNA columna, calculados sobre TODO el dataset
+    filtrado (materializa solo esa columna, no el dataset entero). Sirve para
+    dibujar un grafico:
+
+      - Numerica con muchos valores  -> histograma por rangos (forma de campana).
+      - Texto / booleana / fecha / pocos valores -> conteo por valor.
+
+    Devuelve dict con: labels, counts, numeric (bool), edges (o None), total,
+    truncated (bool: si hay mas categorias de las mostradas)."""
+    schema = get_schema(lf)
+    dtype = schema.get(column)
+    kind = dtype_kind(dtype) if dtype is not None else "str"
+    s = lf.select(pl.col(column)).collect().to_series()
+    s_nn = s.drop_nulls()
+
+    if kind in ("int", "float") and s_nn.len() > 0 and s.n_unique() > top:
+        lo = float(s_nn.min())
+        hi = float(s_nn.max())
+        h = s_nn.hist(bin_count=bins)
+        counts = h.get_column("count").cast(pl.Int64).to_list()
+        n = len(counts)
+        step = (hi - lo) / n if n else 0
+        edges = [lo + i * step for i in range(n + 1)]
+        labels = [f"{edges[i]:.3g} – {edges[i + 1]:.3g}" for i in range(n)]
+        return {
+            "labels": labels, "counts": counts, "numeric": True,
+            "edges": edges, "total": int(s_nn.len()), "truncated": False,
+            "nulls": int(s.len() - s_nn.len()), "column": column,
+        }
+
+    vc = s.value_counts(sort=True)
+    truncated = vc.height > top
+    vc = vc.head(top)
+    first = vc.columns[0]
+    labels = ["(nulo)" if v is None else str(v)
+              for v in vc.get_column(first).to_list()]
+    counts = vc.get_column("count").cast(pl.Int64).to_list()
+    return {
+        "labels": labels, "counts": counts, "numeric": False,
+        "edges": None, "total": int(s.len()), "truncated": truncated,
+        "nulls": int(s.null_count()), "column": column,
+    }
+
+
 def distribution(df: pl.DataFrame, column: str, bins: int = 12,
                  top: int = 25) -> pl.DataFrame:
-    """Distribucion de una columna, lista para mostrar:
-      - Numerica con muchos valores  -> histograma por rangos.
-      - Texto / booleana / pocos valores -> conteo por valor (value_counts).
-    Devuelve columnas: [rango|valor, conteo, %, distribucion (barra visual)].
-    """
+    """(Compat) Distribucion como tabla de texto con barra visual. Se conserva
+    por compatibilidad; la GUI usa ahora distribution_data() + grafico."""
     s = df.get_column(column)
     kind = dtype_kind(s.dtype)
     s_nn = s.drop_nulls()

@@ -10,12 +10,13 @@ from __future__ import annotations
 
 from PySide6.QtCore import QRectF, QPointF, Qt
 from PySide6.QtGui import (
-    QIcon, QPixmap, QPainter, QPen, QColor, QBrush, QPainterPath, QPolygonF
+    QIcon, QPixmap, QPainter, QPen, QColor, QBrush, QPainterPath, QPolygonF,
+    QLinearGradient,
 )
 
 # Paleta base de la app
-ACCENT = "#E4572E"      # naranja de marca
-ACCENT_DK = "#B23A17"
+ACCENT = "#7A3CE0"      # violeta de marca (degradado del logo)
+ACCENT_DK = "#5B2FB0"
 INK = "#2B2B33"         # gris tinta para iconos neutros
 MUTED = "#6B7280"
 
@@ -154,8 +155,12 @@ def _draw(kind: str, p: QPainter, s: float, color: str, accent: str) -> None:
         p.drawLine(QPointF(c.x() - d, c.y() + d), QPointF(c.x() + d, c.y() - d))
 
     elif kind == "logo":
-        # Logo: embudo dentro de circulo -> Colossus
-        p.setBrush(QBrush(QColor(accent)))
+        # Logo: embudo dentro de circulo con degradado esmeralda -> violeta.
+        grad = QLinearGradient(s * 0.15, s * 0.15, s * 0.85, s * 0.85)
+        grad.setColorAt(0.0, QColor("#15C9A6"))
+        grad.setColorAt(0.5, QColor("#3B7FDB"))
+        grad.setColorAt(1.0, QColor("#7A3CE0"))
+        p.setBrush(QBrush(grad))
         p.setPen(_pen(ACCENT_DK, lw))
         c = QPointF(s * 0.5, s * 0.5)
         p.drawEllipse(c, s * 0.40, s * 0.40)
