@@ -17,3 +17,6 @@ Thumbs.db
 
 # Notebook UI (no versionar)
 MFF_UI.ipynb
+
+# Contexto/bitacora interna (solo local, no subir a GitHub)
+CONTEXTO_DEL_PROYECTO.md

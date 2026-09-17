@@ -26,12 +26,13 @@ from PySide6.QtCore import (
     Qt, QAbstractTableModel, QModelIndex, QObject, QRunnable, QThreadPool,
     Signal, Slot, QTimer, QSize, QRectF,
 )
-from PySide6.QtGui import QColor, QPalette, QPainter, QPen
+from PySide6.QtGui import QColor, QPalette, QPainter, QPen, QFont
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QComboBox, QCheckBox,
     QPushButton, QToolButton, QHBoxLayout, QVBoxLayout, QSplitter, QScrollArea,
     QFrame, QListWidget, QListWidgetItem, QTableView, QSpinBox, QFileDialog,
     QMessageBox, QHeaderView, QMenu, QGraphicsDropShadowEffect, QSizePolicy,
+    QDialog, QDialogButtonBox, QFormLayout,
 )
 
 import colossus_core as core
@@ -505,6 +506,359 @@ def section_title(text: str) -> QLabel:
 
 
 # --------------------------------------------------------------------------- #
+# Dialogo de opciones de Excel:  hoja / fila de encabezado / columnas
+# --------------------------------------------------------------------------- #
+class ExcelOptionsDialog(QDialog):
+    """Permite definir DESDE DONDE esta la data en una hoja de calculo, con una
+    vista previa en vivo de las primeras filas. Si el archivo no se puede leer con
+    las opciones actuales, muestra el error pero NO cierra la ventana."""
+
+    def __init__(self, path: str, parent=None):
+        super().__init__(parent)
+        self.path = path
+        self.setWindowTitle("Opciones de Excel")
+        self.setModal(True)
+        self.resize(760, 560)
+
+        # Refresco de la vista previa con un pequeno retardo (asi escribir en el
+        # campo de columnas actualiza en vivo sin releer en cada tecla).
+        self._deb = QTimer(self)
+        self._deb.setSingleShot(True)
+        self._deb.setInterval(250)
+        self._deb.timeout.connect(self.refresh)
+
+        try:
+            sheets = core.excel_sheet_names(path)
+        except Exception:
+            sheets = []
+
+        form = QFormLayout()
+        form.setSpacing(10)
+
+        self.sheet_combo = QComboBox()
+        for s in sheets:
+            self.sheet_combo.addItem(s, s)
+        self.sheet_combo.currentIndexChanged.connect(self._schedule)
+        form.addRow("Hoja", self.sheet_combo)
+
+        self.detect_btn = QPushButton("  Identificar automáticamente la tabla")
+        self.detect_btn.setIcon(make_icon("search", 20, color=NEUTRAL_ICON))
+        self.detect_btn.setToolTip(
+            "Busca sola la fila de encabezado y el rango de columnas con datos.")
+        self.detect_btn.clicked.connect(self._auto_detect)
+        form.addRow("", self.detect_btn)
+
+        self.header_chk = QCheckBox("La primera fila es el encabezado")
+        self.header_chk.setChecked(True)
+        self.header_chk.stateChanged.connect(self._toggle_header)
+        self.header_chk.stateChanged.connect(self._schedule)
+        form.addRow("", self.header_chk)
+
+        self.header_spin = QSpinBox()
+        self.header_spin.setRange(1, 1_048_576)
+        self.header_spin.setValue(1)
+        self.header_spin.setToolTip("Numero de fila (en Excel) que contiene los titulos.")
+        self.header_spin.valueChanged.connect(self._schedule)
+        form.addRow("Fila del encabezado", self.header_spin)
+
+        self.skip_spin = QSpinBox()
+        self.skip_spin.setRange(0, 1_000_000)
+        self.skip_spin.setValue(0)
+        self.skip_spin.setToolTip("Filas de datos a descartar justo despues del encabezado.")
+        self.skip_spin.valueChanged.connect(self._schedule)
+        form.addRow("Saltar filas de datos", self.skip_spin)
+
+        self.cols_edit = QLineEdit()
+        self.cols_edit.setPlaceholderText("Todas   ·   ej.  A:F   o   A,C,E")
+        self.cols_edit.setToolTip("Rango o lista de columnas de Excel. Vacio = todas.")
+        self.cols_edit.textChanged.connect(self._schedule)   # en vivo
+        form.addRow("Columnas", self.cols_edit)
+
+        self.hint = QLabel("")
+        self.hint.setObjectName("SectionHint")
+        self.hint.setWordWrap(True)
+
+        self.preview = QTableView()
+        self.preview.setModel(PolarsTableModel())
+        self.preview.horizontalHeader().setStretchLastSection(True)
+        self.preview.setAlternatingRowColors(True)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Cargar")
+        buttons.button(QDialogButtonBox.Cancel).setText("Cancelar")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 16, 16, 12)
+        lay.setSpacing(10)
+        lay.addLayout(form)
+        lay.addWidget(QLabel("Vista previa (primeras filas)"))
+        lay.addWidget(self.preview, 1)
+        lay.addWidget(self.hint)
+        lay.addWidget(buttons)
+
+        self._ok = False        # ultima lectura fue valida?
+        self.refresh()
+
+    # --------------------------------------------------------------- helpers --
+    def _schedule(self, *_):
+        self._deb.start()
+
+    def _toggle_header(self):
+        self.header_spin.setEnabled(self.header_chk.isChecked())
+
+    def get_opts(self) -> dict:
+        return {
+            "sheet": self.sheet_combo.currentData(),
+            "has_header": self.header_chk.isChecked(),
+            "header_row": self.header_spin.value() - 1,   # 1-based -> 0-based
+            "skip_rows": self.skip_spin.value(),
+            "use_columns": self.cols_edit.text().strip(),
+        }
+
+    def _auto_detect(self):
+        sheet = self.sheet_combo.currentData()
+        try:
+            det = core.detect_excel_table(self.path, sheet)
+        except Exception:
+            det = None
+        if not det:
+            QMessageBox.information(
+                self, "Identificar tabla",
+                "No se encontró una tabla clara en esta hoja.\n"
+                "Ajusta la fila y las columnas manualmente.")
+            return
+        # Aplica lo detectado (bloquea señales para no disparar lecturas de mas).
+        for w in (self.header_chk, self.header_spin, self.skip_spin, self.cols_edit):
+            w.blockSignals(True)
+        self.header_chk.setChecked(True)
+        self.header_spin.setEnabled(True)
+        self.header_spin.setValue(det["header_row_1based"])
+        self.skip_spin.setValue(0)
+        self.cols_edit.setText(det["use_columns"])
+        for w in (self.header_chk, self.header_spin, self.skip_spin, self.cols_edit):
+            w.blockSignals(False)
+        self.refresh()
+        self.hint.setText(
+            f"Detectado: encabezado en la fila {det['header_row_1based']}, "
+            f"columnas {det['use_columns']}.")
+
+    def refresh(self, *_):
+        # Vista previa acotada (rapida) con las opciones actuales.
+        opts = dict(self.get_opts(), n_rows=200)
+        try:
+            lf, _ = core.scan_file(self.path, excel_opts=opts)
+            df = core.preview(lf, 0, 20)
+            self.preview.model().set_df(df)
+            self.hint.setText(f"{df.width} columnas · vista previa de {df.height} filas.")
+            self._ok = True
+        except Exception as exc:
+            self.preview.model().set_df(pl.DataFrame())
+            self.hint.setText(f"⚠  No se pudo leer con estas opciones: {exc}")
+            self._ok = False
+
+    def accept(self):
+        """Solo cierra (y carga) si el archivo SI se puede leer. Si no, avisa y
+        mantiene la ventana abierta para corregir."""
+        opts = self.get_opts()
+        try:
+            lf, _ = core.scan_file(self.path, excel_opts=opts)
+            core.get_schema(lf)          # fuerza a resolver el esquema real
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "No se pudo cargar el archivo",
+                "No se pudo leer la hoja con estas opciones:\n\n"
+                f"{exc}\n\n"
+                "Corrige la fila de encabezado o el rango de columnas, "
+                "usa «Identificar automáticamente», o presiona Cancelar.")
+            return                       # <-- NO cierra la ventana
+        super().accept()
+
+
+# --------------------------------------------------------------------------- #
+# Dialogo selector de tabla para bases SQLite
+# --------------------------------------------------------------------------- #
+class SqliteTableDialog(QDialog):
+    """Elige QUE TABLA de la base SQLite abrir, con vista previa. Si la tabla no
+    se puede leer, avisa y NO cierra la ventana."""
+
+    def __init__(self, path: str, parent=None):
+        super().__init__(parent)
+        self.path = path
+        self.setWindowTitle("Elegir tabla de la base")
+        self.setModal(True)
+        self.resize(720, 520)
+
+        try:
+            tables = core.sqlite_table_names(path)
+        except Exception:
+            tables = []
+
+        form = QFormLayout()
+        form.setSpacing(10)
+        self.table_combo = QComboBox()
+        for t in tables:
+            self.table_combo.addItem(t, t)
+        self.table_combo.currentIndexChanged.connect(self.refresh)
+        form.addRow("Tabla", self.table_combo)
+
+        self.hint = QLabel("")
+        self.hint.setObjectName("SectionHint")
+        self.hint.setWordWrap(True)
+
+        self.preview = QTableView()
+        self.preview.setModel(PolarsTableModel())
+        self.preview.horizontalHeader().setStretchLastSection(True)
+        self.preview.setAlternatingRowColors(True)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Cargar")
+        buttons.button(QDialogButtonBox.Cancel).setText("Cancelar")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 16, 16, 12)
+        lay.setSpacing(10)
+        lay.addLayout(form)
+        lay.addWidget(QLabel("Vista previa (primeras filas)"))
+        lay.addWidget(self.preview, 1)
+        lay.addWidget(self.hint)
+        lay.addWidget(buttons)
+
+        if not tables:
+            self.hint.setText("⚠  La base no tiene tablas legibles.")
+        self.refresh()
+
+    def get_table(self):
+        return self.table_combo.currentData()
+
+    def refresh(self, *_):
+        table = self.get_table()
+        if not table:
+            return
+        try:
+            df = core.read_sqlite(self.path, table, limit=50)
+            self.preview.model().set_df(df)
+            self.hint.setText(f"{df.width} columnas · vista previa de {df.height} filas.")
+        except Exception as exc:
+            self.preview.model().set_df(pl.DataFrame())
+            self.hint.setText(f"⚠  No se pudo leer la tabla: {exc}")
+
+    def accept(self):
+        table = self.get_table()
+        try:
+            lf, _ = core.scan_file(self.path, table=table)
+            core.get_schema(lf)
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "No se pudo cargar la tabla",
+                f"No se pudo leer la tabla seleccionada:\n\n{exc}\n\n"
+                "Elige otra tabla o presiona Cancelar.")
+            return
+        super().accept()
+
+
+# --------------------------------------------------------------------------- #
+# Dialogo de resumen estadistico + distribucion
+# --------------------------------------------------------------------------- #
+class StatsDialog(QDialog):
+    """Muestra el resumen estadistico (describe) del resultado filtrado y, con un
+    boton, la distribucion de cualquier columna (histograma o conteo por valor)."""
+
+    def __init__(self, df: pl.DataFrame, parent=None):
+        super().__init__(parent)
+        self.df = df
+        self.setWindowTitle("Resumen estadístico")
+        self.setModal(True)
+        self.resize(920, 640)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 12)
+        root.setSpacing(10)
+
+        head = QLabel(f"Resumen de {df.height:,} filas · {df.width} columnas")
+        head.setObjectName("SectionTitle")
+        root.addWidget(head)
+
+        split = QSplitter(Qt.Vertical)
+        split.setHandleWidth(10)
+        split.setChildrenCollapsible(False)
+
+        # --- Resumen (describe) ---
+        top = QWidget()
+        tl = QVBoxLayout(top)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(6)
+        tl.addWidget(QLabel("Estadísticas (count · media · std · min · cuartiles · max)"))
+        self.desc_table = QTableView()
+        self.desc_table.setAlternatingRowColors(True)
+        try:
+            self.desc_table.setModel(PolarsTableModel(core.describe(df)))
+        except Exception as exc:
+            self.desc_table.setModel(PolarsTableModel(
+                pl.DataFrame({"error": [f"No se pudo calcular: {exc}"]})))
+        self.desc_table.resizeColumnsToContents()
+        tl.addWidget(self.desc_table, 1)
+        split.addWidget(top)
+
+        # --- Distribucion ---
+        bot = QWidget()
+        bl = QVBoxLayout(bot)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(6)
+        picker = QHBoxLayout()
+        picker.addWidget(QLabel("Distribución de:"))
+        self.dist_combo = QComboBox()
+        for cname, dtype in df.schema.items():
+            self.dist_combo.addItem(f"{cname}   ·{core.dtype_label(dtype)}", cname)
+        picker.addWidget(self.dist_combo, 1)
+        self.dist_btn = primary(QPushButton("  Ver distribución"))
+        self.dist_btn.setIcon(make_icon("stats", 20, color="#FFFFFF"))
+        self.dist_btn.clicked.connect(self._show_distribution)
+        picker.addWidget(self.dist_btn)
+        bl.addLayout(picker)
+
+        self.dist_table = QTableView()
+        self.dist_table.setAlternatingRowColors(True)
+        # fuente monoespaciada para que las barras queden alineadas
+        self.dist_table.setFont(QFont("Consolas", 10))
+        self.dist_table.setModel(PolarsTableModel())
+        bl.addWidget(self.dist_table, 1)
+        self.dist_hint = QLabel("")
+        self.dist_hint.setObjectName("SectionHint")
+        bl.addWidget(self.dist_hint)
+        split.addWidget(bot)
+
+        split.setSizes([250, 340])
+        root.addWidget(split, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.button(QDialogButtonBox.Close).setText("Cerrar")
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        root.addWidget(buttons)
+
+        if self.dist_combo.count():
+            self._show_distribution()      # muestra la primera por defecto
+
+    def _show_distribution(self):
+        col = self.dist_combo.currentData()
+        if not col:
+            return
+        try:
+            dist = core.distribution(self.df, col)
+            self.dist_table.model().set_df(dist)
+            self.dist_table.resizeColumnsToContents()
+            self.dist_hint.setText(
+                f"{dist.height} categorías · barras proporcionales al conteo.")
+        except Exception as exc:
+            self.dist_table.model().set_df(pl.DataFrame())
+            self.dist_hint.setText(f"⚠  No se pudo calcular la distribución: {exc}")
+
+
+# --------------------------------------------------------------------------- #
 # Ventana principal
 # --------------------------------------------------------------------------- #
 class MainWindow(QMainWindow):
@@ -518,6 +872,8 @@ class MainWindow(QMainWindow):
         self.pool = QThreadPool.globalInstance()
         self.path: str | None = None
         self.sep: str = ","
+        self.excel_opts: dict | None = None
+        self.sqlite_table: str | None = None
         self.schema: dict = {}
         self.filter_rows: list[FilterRow] = []
         self.active_row: FilterRow | None = None
@@ -756,6 +1112,13 @@ class MainWindow(QMainWindow):
         self.minmax_btn.setIcon(make_icon("stats", 20, color=NEUTRAL_ICON))
         self.minmax_btn.clicked.connect(self.do_minmax)
         bar.addWidget(self.minmax_btn)
+
+        self.stats_btn = QPushButton("  Resumen")
+        self.stats_btn.setIcon(make_icon("stats", 20, color=NEUTRAL_ICON))
+        self.stats_btn.setToolTip("Resumen estadistico (count, media, std, min, "
+                                  "cuartiles, max) y distribucion por columna.")
+        self.stats_btn.clicked.connect(self.do_stats)
+        bar.addWidget(self.stats_btn)
         lay.addLayout(bar)
 
         self.table = QTableView()
@@ -915,7 +1278,7 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------- estado --
     def _set_loaded(self, ok: bool):
         for w in (self.add_btn, self.preview_btn, self.count_btn, self.minmax_btn,
-                  self.minmax_combo, self.combine_combo, self.negate_chk,
+                  self.stats_btn, self.minmax_combo, self.combine_combo, self.negate_chk,
                   self.offset_spin, self.limit_spin, self.uniq_col, self.uniq_limit,
                   self.uniq_search, self.uniq_list, self.export_btn, self.export_name):
             w.setEnabled(ok)
@@ -924,9 +1287,34 @@ class MainWindow(QMainWindow):
     def open_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Selecciona el archivo masivo", "",
-            "Datos (*.csv *.txt *.tsv *.parquet *.pq);;Todos (*.*)")
-        if path:
-            self.load_file(path)
+            "Datos (*.csv *.txt *.tsv *.csv.gz *.parquet *.pq *.arrow *.feather *.ipc "
+            "*.ndjson *.jsonl *.json *.xlsx *.xlsm *.xls *.xlsb *.ods "
+            "*.db *.sqlite *.sqlite3 *.db3);;"
+            "Texto delimitado (*.csv *.txt *.tsv *.csv.gz);;"
+            "Parquet (*.parquet *.pq);;"
+            "Arrow / Feather (*.arrow *.feather *.ipc);;"
+            "JSON (*.ndjson *.jsonl *.json);;"
+            "Excel / hojas de calculo (*.xlsx *.xlsm *.xls *.xlsb *.ods);;"
+            "SQLite (*.db *.sqlite *.sqlite3 *.db3);;"
+            "Todos (*.*)")
+        if not path:
+            return
+        # Reinicia opciones especificas de formato.
+        self.excel_opts = None
+        self.sqlite_table = None
+        # Para Excel, preguntamos DONDE esta la data (hoja/fila/columnas).
+        if core.is_excel(path):
+            dlg = ExcelOptionsDialog(path, self)
+            if dlg.exec() != QDialog.Accepted:
+                return
+            self.excel_opts = dlg.get_opts()
+        # Para SQLite, preguntamos QUE TABLA abrir.
+        elif core.is_sqlite(path):
+            dlg = SqliteTableDialog(path, self)
+            if dlg.exec() != QDialog.Accepted:
+                return
+            self.sqlite_table = dlg.get_table()
+        self.load_file(path)
 
     def _reload_if_open(self, *_):
         if self.path:
@@ -935,13 +1323,16 @@ class MainWindow(QMainWindow):
     def _date_order(self):
         return self.date_order.currentData()
 
-    def load_file(self, path: str):
-        sep_override = self.sep_combo.currentData()
-        parse_dates = self.dates_chk.isChecked()
-        order = self._date_order()
+    def _scan(self, path: str | None = None):
+        """Abre el archivo actual con las opciones vigentes (barra + Excel + SQLite)."""
+        return core.scan_file(
+            path or self.path, self.sep_combo.currentData(),
+            self.dates_chk.isChecked(), self._date_order(),
+            excel_opts=self.excel_opts, table=self.sqlite_table)
 
+    def load_file(self, path: str):
         def work():
-            lf, sep = core.scan_file(path, sep_override, parse_dates, order)
+            lf, sep = self._scan(path)
             schema = core.get_schema(lf)
             return path, sep, schema
 
@@ -972,6 +1363,8 @@ class MainWindow(QMainWindow):
             self.status.showMessage(
                 f"Cargado: {name}  ·  separador '{'tab' if sep == chr(9) else sep}'  "
                 f"·  {len(schema)} columnas")
+            # Muestra la vista previa automaticamente al terminar de cargar.
+            self.do_preview()
 
         self.run_async(work, done, "Leyendo esquema...")
 
@@ -1002,8 +1395,7 @@ class MainWindow(QMainWindow):
         return [r.to_spec() for r in self.filter_rows]
 
     def _filtered_lf(self):
-        lf, sep = core.scan_file(self.path, self.sep_combo.currentData(),
-                                 self.dates_chk.isChecked(), self._date_order())
+        lf, sep = self._scan()
         lf = core.apply_filters(
             lf, self._current_specs(), self.schema,
             combine=self.combine_combo.currentText(),
@@ -1055,6 +1447,20 @@ class MainWindow(QMainWindow):
 
         self.run_async(work, done, "Calculando min/max...")
 
+    def do_stats(self):
+        """Materializa el resultado filtrado y abre el resumen estadistico."""
+        def work():
+            lf, _ = self._filtered_lf()
+            return lf.collect()
+
+        def done(df):
+            if df.height == 0:
+                self.preview_info.setText("No hay filas para resumir.")
+                return
+            StatsDialog(df, self).exec()
+
+        self.run_async(work, done, "Calculando resumen estadistico...")
+
     def do_export(self):
         if not self.path:
             return
@@ -1085,8 +1491,7 @@ class MainWindow(QMainWindow):
         lim = limit if limit is not None else self.uniq_limit.value()
 
         def work():
-            lf, _ = core.scan_file(self.path, self.sep_combo.currentData(),
-                                   self.dates_chk.isChecked(), self._date_order())
+            lf, _ = self._scan()
             return core.unique_values(lf, column, lim)
 
         self.run_async(work, on_done, "Calculando valores unicos...", on_error)
@@ -1144,8 +1549,7 @@ class MainWindow(QMainWindow):
         self.uniq_status.setText(f"Buscando '{query}' en el archivo...")
 
         def work():
-            lf, _ = core.scan_file(self.path, self.sep_combo.currentData(),
-                                   self.dates_chk.isChecked(), self._date_order())
+            lf, _ = self._scan()
             return core.search_column_values(lf, col, query, 300)
 
         def done(vals):
