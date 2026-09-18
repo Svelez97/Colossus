@@ -52,6 +52,7 @@ python colossus.py
 | `colossus_core.py`     | El motor de filtrado con Polars (lógica pura, sin GUI). |
 | `colossus_icons.py`    | Iconos dibujados por código con QPainter. |
 | `logo.jpg`             | Logo de la marca; de él sale la paleta de colores. |
+| `logo_mark.png`        | Monograma «C» recortado del logo (ícono de la barra). |
 | `generate_test_data.py`| Genera un CSV de prueba grande (5M filas ≈ 272 MB). |
 
 Genera datos de prueba con:

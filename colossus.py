@@ -30,7 +30,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QColor, QPalette, QPainter, QPen, QFont, QBrush, QLinearGradient,
-    QPainterPath, QFontMetrics, QPolygonF,
+    QPainterPath, QFontMetrics, QPolygonF, QPixmap, QIcon,
 )
 from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import (
@@ -43,6 +43,10 @@ from PySide6.QtWidgets import (
 
 import colossus_core as core
 from colossus_icons import make_icon, make_pixmap
+
+# Assets de marca (junto a este archivo).
+_HERE = os.path.dirname(os.path.abspath(__file__))
+LOGO_MARK = os.path.join(_HERE, "logo_mark.png")   # monograma "C" recortado
 
 
 # --------------------------------------------------------------------------- #
@@ -1066,7 +1070,9 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Colossus")
-        self.setWindowIcon(make_icon("logo", 64))
+        _mark = QPixmap(LOGO_MARK)
+        self.setWindowIcon(QIcon(_mark) if not _mark.isNull()
+                           else make_icon("logo", 64))
         self.resize(1380, 840)
         self.setMinimumSize(1060, 620)
 
@@ -1142,7 +1148,12 @@ class MainWindow(QMainWindow):
         lay.setSpacing(12)
 
         logo = QLabel()
-        logo.setPixmap(make_pixmap("logo", 38))
+        mark = QPixmap(LOGO_MARK)
+        if not mark.isNull():
+            logo.setPixmap(mark.scaledToHeight(
+                42, Qt.SmoothTransformation))
+        else:                                   # respaldo: logo dibujado
+            logo.setPixmap(make_pixmap("logo", 40))
         lay.addWidget(logo)
 
         t = QLabel("Colossus")
