@@ -145,6 +145,26 @@ def _draw(kind: str, p: QPainter, s: float, color: str, accent: str) -> None:
         path.lineTo(s * 0.72, s * 0.32)
         p.drawPath(path)
 
+    elif kind == "chat":
+        # Burbuja de chat con tres puntos (asistente)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(m, s * 0.20, s - 2 * m, s * 0.48),
+                            s * 0.14, s * 0.14)
+        p.drawPath(path)
+        # colita de la burbuja
+        tail = QPolygonF([
+            QPointF(s * 0.34, s * 0.66),
+            QPointF(s * 0.30, s * 0.82),
+            QPointF(s * 0.48, s * 0.66),
+        ])
+        p.drawPolygon(tail)
+        # tres puntos
+        p.setBrush(QBrush(QColor(color)))
+        rr = s * 0.045
+        for fx in (0.36, 0.5, 0.64):
+            p.drawEllipse(QPointF(s * fx, s * 0.44), rr, rr)
+        p.setBrush(Qt.NoBrush)
+
     elif kind == "not":
         # Simbolo de negacion (circulo con barra)
         p.setPen(_pen(accent, lw))

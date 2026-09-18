@@ -820,6 +820,187 @@ def distribution(df: pl.DataFrame, column: str, bins: int = 12,
     })
 
 
+# --------------------------------------------------------------------------- #
+# Perfilador local de datos  (asistente "Nivel 1": sin internet, sin LLM)
+# --------------------------------------------------------------------------- #
+def _fmt_num(v) -> str:
+    """Formatea un numero/fecha para el texto del perfil."""
+    if v is None:
+        return "—"
+    if isinstance(v, (dt.date, dt.datetime)):
+        return str(v)
+    try:
+        fv = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    if fv == int(fv) and abs(fv) < 1e15:
+        return f"{int(fv):,}"
+    return f"{fv:,.2f}"
+
+
+# Palabras clave para adivinar (con suavidad) el tema del dataset.
+_THEME_HINTS = {
+    "ventas": ["venta", "sales", "precio", "price", "monto", "importe", "factura"],
+    "clientes": ["cliente", "client", "customer", "usuario", "user", "nombre", "email"],
+    "productos": ["producto", "product", "sku", "categoria", "category", "stock"],
+    "finanzas": ["saldo", "balance", "cuenta", "account", "pago", "payment"],
+    "geografía": ["ciudad", "city", "region", "pais", "country", "lat", "lon"],
+}
+
+
+def profile_data(lf: pl.LazyFrame, schema: dict | None = None) -> dict:
+    """Perfila TODO el dataset (lee del Parquet de cache, rapido) y devuelve una
+    estructura con: nº de filas/columnas, reparto de tipos, e info por columna
+    (nulos, valores unicos, min/max/media en numericas, rango en fechas, top
+    categorias en texto/booleanas de baja cardinalidad) mas 'insights'.
+
+    Todo se calcula localmente, sin enviar datos a ningun lado."""
+    if schema is None:
+        schema = get_schema(lf)
+    cols = list(schema.keys())
+
+    # --- Una sola pasada: nulos + unicos (+ min/max/media segun tipo) ---
+    aggs = [pl.len().alias("__rows")]
+    for c in cols:
+        kind = dtype_kind(schema[c])
+        aggs.append(pl.col(c).null_count().alias(f"{c}\x00n"))
+        aggs.append(pl.col(c).n_unique().alias(f"{c}\x00u"))
+        if kind in ("int", "float", "date", "datetime"):
+            aggs.append(pl.col(c).min().alias(f"{c}\x00mn"))
+            aggs.append(pl.col(c).max().alias(f"{c}\x00mx"))
+        if kind in ("int", "float"):
+            aggs.append(pl.col(c).mean().alias(f"{c}\x00me"))
+    row = _collect(lf.select(aggs))
+    rows = int(row.item(0, "__rows"))
+
+    columns = []
+    kinds_count = {"numérica": 0, "texto": 0, "fecha": 0, "booleana": 0}
+    for c in cols:
+        kind = dtype_kind(schema[c])
+        nulls = int(row.item(0, f"{c}\x00n"))
+        nu = int(row.item(0, f"{c}\x00u"))
+        info = {
+            "name": c, "kind": kind, "label": dtype_label(schema[c]),
+            "nulls": nulls, "null_pct": (nulls / rows * 100) if rows else 0.0,
+            "n_unique": nu, "top": None,
+            "min": None, "max": None, "mean": None,
+        }
+        if kind in ("int", "float", "date", "datetime"):
+            info["min"] = row.item(0, f"{c}\x00mn")
+            info["max"] = row.item(0, f"{c}\x00mx")
+        if kind in ("int", "float"):
+            info["mean"] = row.item(0, f"{c}\x00me")
+            kinds_count["numérica"] += 1
+        elif kind in ("date", "datetime"):
+            kinds_count["fecha"] += 1
+        elif kind == "bool":
+            kinds_count["booleana"] += 1
+        else:
+            kinds_count["texto"] += 1
+        # top categorias para texto/booleana de baja cardinalidad
+        if kind in ("str", "bool") and 0 < nu <= 50:
+            try:
+                vc = _collect(lf.select(pl.col(c)).drop_nulls()
+                              .group_by(c).len().sort("len", descending=True).head(3))
+                info["top"] = [(vc.item(i, 0), int(vc.item(i, 1)))
+                               for i in range(vc.height)]
+            except Exception:
+                info["top"] = None
+        columns.append(info)
+
+    # --- Insights (observaciones automaticas) ---
+    insights = []
+    for ci in columns:
+        n = ci["name"]
+        if rows and ci["n_unique"] == rows and ci["nulls"] == 0:
+            insights.append(f"«{n}» es un identificador único "
+                            f"(un valor distinto por fila).")
+        elif ci["n_unique"] == 1:
+            insights.append(f"«{n}» es constante (un solo valor en todo el archivo).")
+        if ci["null_pct"] >= 50:
+            insights.append(f"«{n}» tiene muchos vacíos "
+                            f"({ci['null_pct']:.0f}% nulos).")
+        if ci["kind"] in ("date", "datetime") and ci["min"] is not None:
+            insights.append(f"«{n}» abarca del {ci['min']} al {ci['max']}.")
+
+    # tema probable (suave, solo si hay pistas claras en los nombres)
+    joined = " ".join(cols).lower()
+    theme = None
+    best = 0
+    for name, kws in _THEME_HINTS.items():
+        hits = sum(1 for k in kws if k in joined)
+        if hits > best:
+            best, theme = hits, name
+
+    return {
+        "rows": rows, "n_cols": len(cols), "kinds": kinds_count,
+        "columns": columns, "insights": insights, "theme": theme,
+    }
+
+
+def profile_narrative(profile: dict) -> str:
+    """Convierte el perfil en un texto en lenguaje natural (espanol), listo para
+    mostrar en el asistente. Devuelve texto plano con saltos de linea y vinetas."""
+    rows = profile["rows"]
+    n_cols = profile["n_cols"]
+    k = profile["kinds"]
+    parts = []
+
+    _plural = {
+        "numérica": ("numérica", "numéricas"),
+        "texto": ("de texto", "de texto"),
+        "fecha": ("de fecha", "de fecha"),
+        "booleana": ("booleana", "booleanas"),
+    }
+    tipos = ", ".join(f"{v} {_plural[name][0 if v == 1 else 1]}"
+                      for name, v in k.items() if v) or "sin columnas"
+    theme = profile.get("theme")
+    intro = f"Cargaste un archivo con {rows:,} filas y {n_cols} columnas."
+    if theme:
+        intro += f" Por los nombres de columna, podría tratarse de datos de {theme}."
+    parts.append(intro)
+    parts.append(f"Tipos de columna: {tipos}.")
+    parts.append("")
+    parts.append("Qué contiene cada columna:")
+    for ci in profile["columns"]:
+        n = ci["name"]
+        bits = []
+        if ci["kind"] in ("int", "float"):
+            bits.append("número")
+            if ci["min"] is not None:
+                bits.append(f"de {_fmt_num(ci['min'])} a {_fmt_num(ci['max'])}")
+            if ci["mean"] is not None:
+                bits.append(f"media {_fmt_num(ci['mean'])}")
+        elif ci["kind"] in ("date", "datetime"):
+            bits.append("fecha")
+            if ci["min"] is not None:
+                bits.append(f"de {_fmt_num(ci['min'])} a {_fmt_num(ci['max'])}")
+        elif ci["kind"] == "bool":
+            bits.append("booleana")
+        else:
+            bits.append("texto")
+        bits.append(f"{ci['n_unique']:,} valores únicos")
+        if ci["nulls"] == 0:
+            bits.append("sin nulos")
+        else:
+            bits.append(f"{ci['null_pct']:.0f}% nulos")
+        if ci["top"]:
+            tops = ", ".join(str(v) for v, _c in ci["top"])
+            bits.append(f"top: {tops}")
+        parts.append(f"  • {n} — " + " · ".join(bits))
+
+    if profile["insights"]:
+        parts.append("")
+        parts.append("Cosas que noté:")
+        for ins in profile["insights"]:
+            parts.append(f"  • {ins}")
+
+    parts.append("")
+    parts.append("(Resumen generado localmente en tu equipo; los datos no salen "
+                 "de aquí.)")
+    return "\n".join(parts)
+
+
 def export_csv(lf: pl.LazyFrame, out_path: str, separator: str = ",") -> None:
     """Escribe el resultado filtrado en streaming (memoria acotada)."""
     try:

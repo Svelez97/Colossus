@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
     QPushButton, QToolButton, QHBoxLayout, QVBoxLayout, QSplitter, QScrollArea,
     QFrame, QListWidget, QListWidgetItem, QTableView, QSpinBox, QFileDialog,
     QMessageBox, QHeaderView, QMenu, QGraphicsDropShadowEffect, QSizePolicy,
-    QDialog, QDialogButtonBox, QFormLayout,
+    QDialog, QDialogButtonBox, QFormLayout, QTextBrowser,
 )
 
 import colossus_core as core
@@ -1064,6 +1064,51 @@ class StatsDialog(QDialog):
 
 
 # --------------------------------------------------------------------------- #
+# Asistente de datos (perfilador local, "Nivel 1" del chatbot)
+# --------------------------------------------------------------------------- #
+class ProfileDialog(QDialog):
+    """Ventana del asistente: muestra en lenguaje natural qué son los datos y
+    cómo están organizados. El resumen se genera localmente (sin internet)."""
+
+    def __init__(self, narrative: str, window: "MainWindow"):
+        super().__init__(window)
+        self.setWindowTitle("Asistente de datos")
+        self.setModal(True)
+        self.resize(720, 640)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 12)
+        root.setSpacing(10)
+
+        head = QHBoxLayout()
+        icon = QLabel()
+        icon.setPixmap(make_pixmap("chat", 28))
+        head.addWidget(icon)
+        titles = QVBoxLayout()
+        titles.setSpacing(0)
+        t = QLabel("Asistente de datos")
+        t.setObjectName("SectionTitle")
+        sub = QLabel("Resumen automático · se calcula en tu equipo, sin internet")
+        sub.setObjectName("SectionHint")
+        titles.addWidget(t)
+        titles.addWidget(sub)
+        head.addLayout(titles)
+        head.addStretch(1)
+        root.addLayout(head)
+
+        self.view = QTextBrowser()
+        self.view.setPlainText(narrative)
+        self.view.setFont(QFont("Segoe UI", 11))
+        root.addWidget(self.view, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.button(QDialogButtonBox.Close).setText("Cerrar")
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        root.addWidget(buttons)
+
+
+# --------------------------------------------------------------------------- #
 # Ventana principal
 # --------------------------------------------------------------------------- #
 class MainWindow(QMainWindow):
@@ -1344,6 +1389,14 @@ class MainWindow(QMainWindow):
                                   "cuartiles, max) y distribucion por columna.")
         self.stats_btn.clicked.connect(self.do_stats)
         bar.addWidget(self.stats_btn)
+
+        self.profile_btn = QPushButton("  Asistente")
+        self.profile_btn.setIcon(make_icon("chat", 20, color=NEUTRAL_ICON))
+        self.profile_btn.setToolTip(
+            "Asistente de datos: describe automaticamente que son los datos y "
+            "como estan organizados. Se calcula local, sin internet.")
+        self.profile_btn.clicked.connect(self.do_profile)
+        bar.addWidget(self.profile_btn)
         lay.addLayout(bar)
 
         self.table = QTableView()
@@ -1505,7 +1558,8 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------- estado --
     def _set_loaded(self, ok: bool):
         for w in (self.add_btn, self.preview_btn, self.count_btn, self.minmax_btn,
-                  self.stats_btn, self.minmax_combo, self.combine_combo, self.negate_chk,
+                  self.stats_btn, self.profile_btn, self.minmax_combo,
+                  self.combine_combo, self.negate_chk,
                   self.offset_spin, self.limit_spin, self.uniq_col, self.uniq_limit,
                   self.uniq_search, self.uniq_list, self.export_btn, self.export_name,
                   self.export_sep):
@@ -1708,6 +1762,20 @@ class MainWindow(QMainWindow):
             self.error(f"{type(exc).__name__}: {exc}")
             return
         StatsDialog(lf, dict(self.schema), self).exec()
+
+    def do_profile(self):
+        """Asistente de datos: perfila el archivo completo (tal como se cargó) y
+        abre una ventana con la descripcion en lenguaje natural."""
+        schema = dict(self.schema)
+
+        def work():
+            lf, _ = self._scan()          # dataset completo desde el cache Parquet
+            return core.profile_narrative(core.profile_data(lf, schema))
+
+        def done(text):
+            ProfileDialog(text, self).exec()
+
+        self.run_async(work, done, "Analizando los datos...")
 
     def do_export(self):
         if not self.path:

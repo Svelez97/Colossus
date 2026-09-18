@@ -88,7 +88,12 @@ python generate_test_data.py 20000000   # 20 millones de filas (~1 GB)
    suave tipo campana** para columnas numéricas (histograma por rangos) o conteo
    por valor para texto/booleanas/fecha. Los colores del gráfico siguen el
    degradado del logo.
-7. **Exportar CSV**: la exportación es **siempre CSV** (para manipular cómodo en
+7. **Asistente** (botón 💬): abre el **asistente de datos**, que describe en
+   lenguaje natural **qué son los datos y cómo están organizados** (nº de filas y
+   columnas, tipos, valores únicos, nulos, rangos, top de categorías y algunas
+   observaciones automáticas, p. ej. qué columna parece un identificador). Todo se
+   calcula **localmente en tu equipo, sin internet**; los datos no salen de ahí.
+8. **Exportar CSV**: la exportación es **siempre CSV** (para manipular cómodo en
    Excel) y puedes **elegir el separador** de salida (`,` `;` `|` o tab). Se
    escribe en streaming (no carga todo en RAM).
 
