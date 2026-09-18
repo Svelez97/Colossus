@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import traceback
+import uuid
 
 import polars as pl
 from PySide6.QtCore import (
@@ -1070,6 +1072,7 @@ class MainWindow(QMainWindow):
 
         self.pool = QThreadPool.globalInstance()
         self.path: str | None = None
+        self.parquet_path: str | None = None   # cache Parquet del archivo abierto
         self.sep: str = ","
         self.excel_opts: dict | None = None
         self.sqlite_table: str | None = None
@@ -1228,8 +1231,20 @@ class MainWindow(QMainWindow):
         bar.addWidget(QLabel("Exportar como"))
         self.export_name = QLineEdit()
         self.export_name.setPlaceholderText("nombre_salida")
-        self.export_name.setFixedWidth(190)
+        self.export_name.setFixedWidth(160)
         bar.addWidget(self.export_name)
+
+        bar.addWidget(QLabel("Sep."))
+        self.export_sep = QComboBox()
+        self.export_sep.addItem(",  (coma)", ",")
+        self.export_sep.addItem(";  (punto y coma)", ";")
+        self.export_sep.addItem("|  (barra)", "|")
+        self.export_sep.addItem("tab", "\t")
+        self.export_sep.setToolTip(
+            "Separador del CSV de salida. Usa ';' si tu Excel abre con ese "
+            "separador; ',' es el estandar universal.")
+        bar.addWidget(self.export_sep)
+
         self.export_btn = primary(QPushButton("  Exportar CSV"))
         self.export_btn.setIcon(make_icon("export", 22, color="#FFFFFF"))
         self.export_btn.clicked.connect(self.do_export)
@@ -1481,7 +1496,8 @@ class MainWindow(QMainWindow):
         for w in (self.add_btn, self.preview_btn, self.count_btn, self.minmax_btn,
                   self.stats_btn, self.minmax_combo, self.combine_combo, self.negate_chk,
                   self.offset_spin, self.limit_spin, self.uniq_col, self.uniq_limit,
-                  self.uniq_search, self.uniq_list, self.export_btn, self.export_name):
+                  self.uniq_search, self.uniq_list, self.export_btn, self.export_name,
+                  self.export_sep):
             w.setEnabled(ok)
 
     # --------------------------------------------------------------- abrir --
@@ -1524,22 +1540,46 @@ class MainWindow(QMainWindow):
     def _date_order(self):
         return self.date_order.currentData()
 
-    def _scan(self, path: str | None = None):
-        """Abre el archivo actual con las opciones vigentes (barra + Excel + SQLite)."""
-        return core.scan_file(
-            path or self.path, self.sep_combo.currentData(),
-            self.dates_chk.isChecked(), self._date_order(),
-            excel_opts=self.excel_opts, table=self.sqlite_table)
+    def _scan(self):
+        """LazyFrame de las operaciones: SIEMPRE lee del Parquet de cache (rapido).
+        El archivo original ya fue convertido una vez al abrirlo."""
+        return core.scan_parquet_cache(self.parquet_path), self.sep
+
+    @staticmethod
+    def _new_cache_path() -> str:
+        return os.path.join(tempfile.gettempdir(),
+                            f"colossus_{uuid.uuid4().hex}.parquet")
+
+    def _clear_cache(self):
+        """Borra el Parquet temporal del archivo anterior (si lo hay)."""
+        if self.parquet_path and os.path.exists(self.parquet_path):
+            try:
+                os.remove(self.parquet_path)
+            except OSError:
+                pass
+        self.parquet_path = None
+
+    def closeEvent(self, event):
+        self._clear_cache()
+        super().closeEvent(event)
 
     def load_file(self, path: str):
+        # Convierte el archivo (de cualquier formato) a un Parquet temporal una
+        # sola vez; a partir de ahi todo se lee de ese Parquet ultrarrapido.
         def work():
-            lf, sep = self._scan(path)
-            schema = core.get_schema(lf)
-            return path, sep, schema
+            pq = self._new_cache_path()
+            _, sep = core.materialize_parquet(
+                path, pq, self.sep_combo.currentData(),
+                self.dates_chk.isChecked(), self._date_order(),
+                excel_opts=self.excel_opts, table=self.sqlite_table)
+            schema = core.get_schema(core.scan_parquet_cache(pq))
+            return path, pq, sep, schema
 
         def done(result):
-            path_, sep, schema = result
-            self.path, self.sep, self.schema = path_, sep, schema
+            path_, pq, sep, schema = result
+            self._clear_cache()                 # borra el cache anterior
+            self.path, self.parquet_path, self.sep, self.schema = \
+                path_, pq, sep, schema
             name = os.path.basename(path_)
             self.file_chip.setText(f"{name}   ·   {len(schema)} col")
             self._set_loaded(True)
@@ -1562,12 +1602,12 @@ class MainWindow(QMainWindow):
                 self._remove_row(r)
             self.add_filter_row()
             self.status.showMessage(
-                f"Cargado: {name}  ·  separador '{'tab' if sep == chr(9) else sep}'  "
-                f"·  {len(schema)} columnas")
+                f"Cargado: {name}  ·  {len(schema)} columnas  ·  "
+                f"en cache Parquet (lectura ultrarrapida)")
             # Muestra la vista previa automaticamente al terminar de cargar.
             self.do_preview()
 
-        self.run_async(work, done, "Leyendo esquema...")
+        self.run_async(work, done, "Convirtiendo a Parquet (una sola vez)...")
 
     # --------------------------------------------------------------- filas --
     def add_filter_row(self) -> FilterRow:
@@ -1669,16 +1709,19 @@ class MainWindow(QMainWindow):
             self, "Guardar archivo filtrado", default, "CSV (*.csv)")
         if not out_path:
             return
-        sep = self.sep_combo.currentData() or self.sep
+        # La exportacion es SIEMPRE CSV, con el separador que elija el usuario
+        # (para poder abrir/manipular comodo en Excel).
+        sep = self.export_sep.currentData() or ","
 
         def work():
-            lf, real_sep = self._filtered_lf()
-            core.export_csv(lf, out_path, sep or real_sep)
+            lf, _ = self._filtered_lf()
+            core.export_csv(lf, out_path, sep)
             return out_path
 
         def done(p):
+            sep_name = "tab" if sep == "\t" else sep
             self.preview_info.setText(
-                f"✓ Exportado ({len(specs_active)} filtros):  {p}")
+                f"✓ Exportado CSV ({len(specs_active)} filtros · sep '{sep_name}'):  {p}")
             self.status.showMessage(f"Exportado: {p}")
 
         self.run_async(work, done, "Exportando (streaming)...")

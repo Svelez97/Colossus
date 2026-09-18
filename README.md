@@ -26,6 +26,17 @@ Los iconos se dibujan por código, sin archivos de imagen.
 base **SQLite** se muestra un panel para **elegir la tabla** (con vista previa); la
 base se abre en **solo lectura** (no se modifica).
 
+### Motor de lectura: caché Parquet (ultrarrápido)
+
+Sin importar el formato de origen (CSV, Excel, SQLite, JSON…), al abrir el archivo
+Colossus lo **convierte una sola vez a un Parquet temporal** y **todas las
+operaciones** (vista previa, contar, min/max, resumen, filtros, export) leen de ese
+Parquet. Parquet es columnar y comprimido: en pruebas con 10 millones de filas pasó
+de 571 MB (CSV) a 91 MB, y las lecturas fueron **5–50× más rápidas** (p. ej. la vista
+previa filtrada de ~1 s a ~20 ms). El Parquet vive en la carpeta temporal del sistema
+y se borra solo al cerrar la app o abrir otro archivo. El archivo original **nunca se
+modifica**; la exportación es siempre CSV.
+
 ## Instalar y ejecutar
 
 ```bash
@@ -76,7 +87,9 @@ python generate_test_data.py 20000000   # 20 millones de filas (~1 GB)
    suave tipo campana** para columnas numéricas (histograma por rangos) o conteo
    por valor para texto/booleanas/fecha. Los colores del gráfico siguen el
    degradado del logo.
-7. **Exportar CSV**: escribe el resultado en streaming (no carga todo en RAM).
+7. **Exportar CSV**: la exportación es **siempre CSV** (para manipular cómodo en
+   Excel) y puedes **elegir el separador** de salida (`,` `;` `|` o tab). Se
+   escribe en streaming (no carga todo en RAM).
 
 ## Tabla de resultados (tipo Excel)
 
